@@ -42,8 +42,15 @@
           </div>
         </div>
         <button id="submit-button" type="submit">Analyze prompt</button>
+        <button id="ask-provider-button" class="secondary" type="button" hidden>Analyze, then ask AI provider</button>
         <p id="error" class="error" role="alert"></p>
       </form>
+    </section>
+
+    <section id="provider-result" class="card result" hidden aria-live="polite">
+      <h2>AI provider response</h2>
+      <p id="provider-message"></p>
+      <pre id="provider-answer"></pre>
     </section>
 
     <section id="result" class="card result" hidden aria-live="polite">
@@ -51,6 +58,7 @@
       <p class="score-line">Risk score: <strong id="score"></strong><span> / 100</span></p>
       <p id="message"></p>
       <h3>Detected rules</h3><ul id="rules"></ul>
+      <h3>Detector contributions</h3><ul id="detector-results"></ul>
       <div id="sanitized-wrap" hidden><h3>Sanitized copy</h3><pre id="sanitized"></pre></div>
       <p class="request-id">Request ID: <code id="request-id"></code></p>
     </section>

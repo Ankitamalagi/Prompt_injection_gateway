@@ -4,7 +4,7 @@ A FastAPI service and browser dashboard for checking text for common prompt inje
 
 ## Features
 
-- Preprocesses text and checks it against rule-based prompt-injection patterns.
+- Preprocesses text and checks it with an explainable, configurable detector pipeline (rule-based by default).
 - Calculates a 0–100 risk score and applies a server-controlled policy.
 - Provides a browser dashboard and REST API for prompt analysis.
 - Stores audit metadata and a SHA-256 prompt hash in SQLite; it does not store the submitted prompt text.
@@ -12,8 +12,9 @@ A FastAPI service and browser dashboard for checking text for common prompt inje
 - Supports a rate-limited public demo and API-key-authenticated application integrations.
 - Protects audit records with a separate administrator key and assigns app IDs from server configuration.
 - Includes a non-root Docker image with a persistent data volume.
+- Offers an optional authenticated AI provider route; it stays disabled without server-side configuration.
 
-This is a learning prototype. It does not guarantee that a prompt is safe and does not forward prompts to an AI provider.
+This is a learning prototype. A gateway decision does not guarantee that a prompt is safe from prompt injection, and provider output is not independently verified by the gateway.
 
 The `source` field is supplied by the caller. Its small scoring adjustment is a hint, not verified provenance; do not use it as an authorization or trust boundary.
 
@@ -61,7 +62,7 @@ Supported server modes are:
 - `ALLOW`: allow every prompt. This is an administrator-only choice and disables automatic blocking, so use it only when that behavior is intentional.
 - `FLAG`: flag prompts and block any score at or above the block threshold.
 - `BLOCK`: block every prompt.
-- `SANITIZE`: return a copy with known suspicious spans removed for every prompt. The gateway does not forward prompts to a model; the integrating application must decide what to do with that copy.
+- `SANITIZE`: `POST /api/analyze` returns a copy with known suspicious spans removed. When the optional `/api/chat` route is enabled, it sends only that sanitized copy to the provider.
 
 If `GATEWAY_POLICY` contains an unknown value, the application fails at startup instead of silently choosing a policy. The dashboard reads the active non-secret setting from `GET /api/config`. The API accepts `POST /api/analyze` with JSON such as `{"prompt":"Please summarize these notes."}`. Audit metadata is available at `GET /api/audit`.
 
@@ -108,10 +109,37 @@ The volume preserves audit records across container restarts. For an internet-fa
 - `tests/`: pytest checks for safe and suspicious prompts, policies, audit behavior, validation, and health endpoint.
 - `requirements.txt`: Python packages needed to run the service.
 - `requirements-dev.txt`: runtime requirements plus pytest and its HTTP test client.
+- `requirements-ai.txt`: optional official OpenAI Python SDK for provider-enabled deployments.
+- `detectors.py` and `providers.py`: modular detection and provider interfaces.
 - `Dockerfile` and `.dockerignore`: container build and safe build context.
 - `.gitignore`: excludes local environments, secret/config files, databases, and generated files from Git.
 - `gateway_logs.sqlite3`: created locally at runtime and excluded from Git; contains decision metadata and a SHA-256 prompt hash, not prompt text.
 - `LICENSE`: MIT license for reuse and distribution.
+
+## Optional AI provider integration
+
+The local dashboard and `POST /api/analyze` continue to work without provider credentials or the AI SDK. To enable provider forwarding, install `requirements-ai.txt` and configure these values only in the server's environment or secret manager:
+
+- `AI_PROVIDER=openai` enables the OpenAI-compatible provider. The default `none` keeps provider access off.
+- `OPENAI_API_KEY` is read only by the server and is never returned, logged, or sent to browser code.
+- `OPENAI_MODEL` selects the model. `OPENAI_BASE_URL` is optional for an operator-managed OpenAI-compatible endpoint.
+- `AI_PROVIDER_TIMEOUT_SECONDS` sets the request timeout (1–120 seconds; default 20).
+- `GATEWAY_FLAG_PROVIDER_ACTION` is `block` by default. Set it to `allow` only if the server operator explicitly wants FLAGged prompts sent.
+
+Provider calls use `POST /api/chat` with the same prompt/source JSON as `/api/analyze`, and require a registered application Bearer key even if the anonymous public demo is enabled. The route runs preprocessing, detection, policy enforcement, and audit logging first:
+
+- `BLOCK`: the provider is not called.
+- `FLAG`: held by default; sent as normalized text only when the server sets `GATEWAY_FLAG_PROVIDER_ACTION=allow`.
+- `SANITIZE`: sends only the normalized copy after the current matching rule spans are replaced by `[removed suspicious instruction]`. This simple regex replacement can remove useful text and is not a proof of safety.
+- `ALLOW`: sends the normalized prompt.
+
+Provider errors return generic gateway messages (502 for provider failures, 504 for timeout, 503 when provider setup is unavailable). The SDK is configured without automatic retries to avoid repeating paid requests. The provider response is returned to the authenticated caller and is not written to SQLite. Enabling this option sends permitted prompt content to the configured external provider; review its privacy and retention terms before use. For an AI-enabled Docker image, build with `docker build --build-arg INSTALL_AI=true -t prompt-injection-gateway .` and pass provider settings at container runtime.
+
+## Detection pipeline
+
+`detectors.py` defines the `Detector` interface, a registry, and result types. `RuleDetector` is the only implemented detector today. `GATEWAY_DETECTORS=rules` selects the pipeline (comma-separated registered names); unknown names fail startup rather than being silently ignored. To load operator-maintained plugin modules that register detectors, set `GATEWAY_DETECTOR_MODULES=package.module` (multiple comma-separated module names are supported) before startup. Each response includes `active_detectors` and `detector_results`, which show the score and named signals from each detector. The existing `detected_rules` field remains available for older clients. Caller-reported source penalties are also reported separately and are unverified metadata. No machine-learning model is implemented or enabled.
+
+New detectors can implement `inspect(normalized_prompt)` and register their class with `register_detector`; their module can be imported with `GATEWAY_DETECTOR_MODULES`. Scores are added and capped at 100. Treat detector plugin modules as trusted server code.
 
 ## Tests
 
@@ -122,4 +150,4 @@ python -m pytest -q
 
 ## Limitations
 
-This project is a security prototype, not a guarantee that text is safe. It uses a short rule list and simple heuristics, with no trained ML classifier or provider forwarding; it can miss attacks and flag harmless text. The public demo and app quotas are in-memory and per process, so multi-instance deployments need an edge limiter. SQLite is suitable for a small, single-instance deployment with persistent storage; use managed database infrastructure for higher availability or concurrent multi-instance deployments. Audit hashes can still correlate repeated prompts. Production use also needs HTTPS, secret management, monitoring, backup and recovery plans, and regular adversarial testing. Never give an AI model unrestricted access to sensitive tools or data; enforce permissions in application code and require approval for high-impact actions.
+This project is a security prototype, not a guarantee that text is safe. Its short rule list and simple heuristics can miss attacks and flag harmless text. The provider integration is optional, sends approved prompt text to an external service, and cannot guarantee the model's response is safe. The public demo and app quotas are in-memory and per process, so multi-instance deployments need an edge limiter. SQLite is suitable for a small, single-instance deployment with persistent storage; use managed database infrastructure for higher availability or concurrent multi-instance deployments. Audit hashes can still correlate repeated prompts. Production use also needs HTTPS, secret management, monitoring, backup and recovery plans, and regular adversarial testing. Never give an AI model unrestricted access to sensitive tools or data; enforce permissions in application code and require approval for high-impact actions.

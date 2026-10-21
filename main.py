@@ -25,6 +25,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from detectors import load_detector_plugins, parse_detector_names, run_pipeline
+from providers import ProviderError, ProviderTimeout, configure_provider
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -63,6 +66,12 @@ def parse_policy_mode(value: str) -> PolicyMode:
 
 
 SERVER_POLICY = parse_policy_mode(os.getenv("GATEWAY_POLICY", "AUTO"))
+load_detector_plugins(os.getenv("GATEWAY_DETECTOR_MODULES", ""))
+ACTIVE_DETECTORS = parse_detector_names(os.getenv("GATEWAY_DETECTORS", "rules"))
+FLAG_PROVIDER_ACTION = os.getenv("GATEWAY_FLAG_PROVIDER_ACTION", "block").strip().lower()
+if FLAG_PROVIDER_ACTION not in {"block", "allow"}:
+    raise ValueError("GATEWAY_FLAG_PROVIDER_ACTION must be 'block' or 'allow'")
+PROVIDER_SETUP = configure_provider()
 
 
 def parse_bool_setting(name: str, default: bool) -> bool:
@@ -123,19 +132,25 @@ class AnalyzeResponse(BaseModel):
     risk_score: int
     decision: Policy
     detected_rules: list[str]
+    active_detectors: list[str]
+    detector_results: list[dict[str, object]]
     normalized_prompt: str
     sanitized_prompt: str | None = None
     message: str
 
 
-RULES: list[tuple[str, re.Pattern[str], int]] = [
-    ("ignore_previous_instructions", re.compile(r"\b(ignore|disregard|forget|override)\b.{0,60}\b(previous|prior|above|earlier|system|all)\b.{0,35}\b(instructions?|rules?|prompt)\b", re.I | re.S), 55),
-    ("reveal_system_prompt", re.compile(r"\b(reveal|show|print|repeat|expose|leak)\b.{0,50}\b(system prompt|hidden prompt|developer message|instructions?)\b", re.I | re.S), 40),
-    ("roleplay_jailbreak", re.compile(r"\b(pretend|act|role.?play)\b.{0,50}\b(unrestricted|no rules|DAN|different AI|developer mode)\b", re.I | re.S), 35),
-    ("instruction_override_marker", re.compile(r"(?:<\|im_start\|>|\[\[?system\]?\]|###\s*(?:system|instruction)|<system>)", re.I), 30),
-    ("unsafe_tool_instruction", re.compile(r"\b(call|invoke|use|run)\b.{0,35}\b(tool|function|browser|shell|terminal)\b.{0,50}\b(without|secretly|silently|approval|permission)\b", re.I | re.S), 35),
-    ("secret_exfiltration", re.compile(r"\b(send|email|upload|forward|exfiltrate)\b.{0,60}\b(secret|credential|password|api key|private data)\b", re.I | re.S), 40),
-]
+class ChatResponse(BaseModel):
+    request_id: str
+    risk_score: int
+    decision: Policy
+    detected_rules: list[str]
+    active_detectors: list[str]
+    detector_results: list[dict[str, object]]
+    provider_sent: bool
+    provider_response: str | None = None
+    message: str
+
+
 ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
 
 
@@ -216,24 +231,37 @@ def preprocess(prompt: str) -> tuple[str, bool]:
 
 
 def detect(prompt: str, source: str) -> tuple[int, list[str], str]:
+    score, signals, normalized, _ = inspect_prompt(prompt, source)
+    return score, signals, normalized
+
+
+def inspect_prompt(prompt: str, source: str) -> tuple[int, list[str], str, list[dict[str, object]]]:
     normalized, had_zero_width = preprocess(prompt)
-    rules: list[str] = []
-    score = 0
-    for name, pattern, weight in RULES:
-        if pattern.search(normalized):
-            rules.append(name)
-            score += weight
+    score, detector_results, rules = run_pipeline(normalized, ACTIVE_DETECTORS)
     if had_zero_width:
         rules.append("zero_width_characters")
         score += 15
+        detector_results.append({
+            "detector": "preprocessing",
+            "score": 15,
+            "signals": [{"name": "zero_width_characters", "score": 15, "explanation": "Removed zero-width Unicode characters during normalization."}],
+        })
     # External content starts with a small additional trust penalty.
     source_penalties = {"tool": 8, "api": 8, "document": 15, "web": 15}
-    score += source_penalties.get(source.casefold(), 0)
-    return min(score, 100), rules, normalized
+    source_penalty = source_penalties.get(source.casefold(), 0)
+    if source_penalty:
+        score += source_penalty
+        detector_results.append({
+            "detector": "source_context",
+            "score": source_penalty,
+            "signals": [{"name": "caller_reported_source", "score": source_penalty, "explanation": f"Caller reported source={source!r}; this is unverified metadata."}],
+        })
+    return min(score, 100), rules, normalized, detector_results
 
 
 def remove_suspicious_spans(prompt: str) -> str:
     cleaned, _ = preprocess(prompt)
+    from detectors import RULES
     for _, pattern, _ in RULES:
         cleaned = pattern.sub("[removed suspicious instruction]", cleaned)
     return cleaned
@@ -333,6 +361,7 @@ def get_config() -> dict[str, object]:
         "flag_threshold": FLAG_THRESHOLD,
         "block_threshold": BLOCK_THRESHOLD,
         "public_demo_enabled": PUBLIC_DEMO_ENABLED,
+        "provider_enabled": PROVIDER_SETUP.provider is not None,
     }
 
 
@@ -347,7 +376,7 @@ def analyze(
     rate_identity = f"demo:{client_host}" if is_public_demo else f"app:{app_id}"
     RATE_LIMITER.check(rate_identity, DEMO_RATE_LIMIT if is_public_demo else APP_RATE_LIMIT)
     request_id = str(uuid.uuid4())
-    score, rules, normalized = detect(request.prompt, request.source)
+    score, rules, normalized, detector_results = inspect_prompt(request.prompt, request.source)
     decision = decide(score)
     cleaned = remove_suspicious_spans(normalized) if decision == Policy.sanitize else None
     prompt_hash = hashlib.sha256(request.prompt.encode("utf-8")).hexdigest()
@@ -373,9 +402,62 @@ def analyze(
         risk_score=score,
         decision=decision,
         detected_rules=rules,
+        active_detectors=list(ACTIVE_DETECTORS),
+        detector_results=detector_results,
         normalized_prompt=normalized,
         sanitized_prompt=cleaned,
         message=messages[decision],
+    )
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(
+    request: AnalyzeRequest,
+    http_request: Request,
+    authorization: str | None = Header(default=None),
+) -> ChatResponse:
+    """Analyze first and forward only if the server policy permits it."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="An application API key is required for provider access")
+    analysis = analyze(request, http_request, authorization)
+    if PROVIDER_SETUP.provider is None:
+        raise HTTPException(status_code=503, detail="AI provider is not configured or available")
+
+    if analysis.decision == Policy.block:
+        return ChatResponse(
+            request_id=analysis.request_id, risk_score=analysis.risk_score,
+            decision=analysis.decision, detected_rules=analysis.detected_rules,
+            active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+            provider_sent=False, message="Gateway policy blocked this prompt; it was not sent to the provider.",
+        )
+    if analysis.decision == Policy.flag and FLAG_PROVIDER_ACTION == "block":
+        return ChatResponse(
+            request_id=analysis.request_id, risk_score=analysis.risk_score,
+            decision=analysis.decision, detected_rules=analysis.detected_rules,
+            active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+            provider_sent=False, message="The prompt was flagged and server policy is configured to hold flagged prompts.",
+        )
+    if analysis.decision == Policy.sanitize:
+        provider_prompt = analysis.sanitized_prompt or ""
+    else:
+        provider_prompt = analysis.normalized_prompt
+    try:
+        provider_response = PROVIDER_SETUP.provider.complete(provider_prompt)
+    except ProviderTimeout as exc:
+        logger.warning("provider timeout request_id=%s", analysis.request_id)
+        raise HTTPException(status_code=504, detail="AI provider timed out; no response was returned") from exc
+    except ProviderError as exc:
+        logger.warning("provider request failed request_id=%s", analysis.request_id)
+        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
+    except Exception as exc:
+        logger.warning("provider integration error request_id=%s", analysis.request_id)
+        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
+    return ChatResponse(
+        request_id=analysis.request_id, risk_score=analysis.risk_score,
+        decision=analysis.decision, detected_rules=analysis.detected_rules,
+        active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+        provider_sent=True, provider_response=provider_response,
+        message="Gateway analysis completed and the permitted text was sent to the configured provider.",
     )
 
 

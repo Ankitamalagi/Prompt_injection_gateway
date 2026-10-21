@@ -41,6 +41,14 @@ form.addEventListener("submit", async (event) => {
       item.textContent = "No rules matched.";
       list.append(item);
     }
+    const detectorList = document.querySelector("#detector-results");
+    detectorList.replaceChildren();
+    for (const detector of body.detector_results || []) {
+      const item = document.createElement("li");
+      const explanations = detector.signals.map((signal) => `${signal.name} (+${signal.score}): ${signal.explanation}`);
+      item.textContent = `${detector.detector}: +${detector.score}${explanations.length ? ` — ${explanations.join("; ")}` : " (no signal)"}`;
+      detectorList.append(item);
+    }
     const sanitizedWrap = document.querySelector("#sanitized-wrap");
     sanitizedWrap.hidden = !body.sanitized_prompt;
     if (body.sanitized_prompt) document.querySelector("#sanitized").textContent = body.sanitized_prompt;
@@ -85,6 +93,40 @@ async function loadAudit() {
 }
 
 document.querySelector("#refresh-audit").addEventListener("click", loadAudit);
+
+document.querySelector("#ask-provider-button").addEventListener("click", async () => {
+  const errorBox = document.querySelector("#error");
+  const button = document.querySelector("#ask-provider-button");
+  const apiKey = document.querySelector("#api-key").value.trim();
+  errorBox.textContent = "";
+  if (!apiKey) {
+    errorBox.textContent = "An application API key is required to use the AI provider.";
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Checking and sending…";
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        prompt: document.querySelector("#prompt").value,
+        source: document.querySelector("#source").value,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "The provider request failed.");
+    document.querySelector("#provider-message").textContent = data.message;
+    document.querySelector("#provider-answer").textContent = data.provider_response || "No provider response: gateway policy held this prompt.";
+    document.querySelector("#provider-result").hidden = false;
+  } catch (error) {
+    errorBox.textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Analyze, then ask AI provider";
+  }
+});
+
 async function loadConfig() {
   const response = await fetch("/api/config");
   if (!response.ok) return;
@@ -101,6 +143,7 @@ async function loadConfig() {
   document.querySelector("#access-help").textContent = config.public_demo_enabled
     ? "The public demo is enabled. Application integrations can authenticate with an API key."
     : "The public demo is disabled. Enter an application API key to analyze prompts.";
+  document.querySelector("#ask-provider-button").hidden = !config.provider_enabled;
 }
 
 loadAudit();

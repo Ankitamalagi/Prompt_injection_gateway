@@ -1,0 +1,2 @@
+# Install this optional SDK only for an AI-enabled deployment.
+openai>=1.40,<3.0

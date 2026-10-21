@@ -7,11 +7,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
+COPY requirements-ai.txt ./
+ARG INSTALL_AI=false
 RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "$INSTALL_AI" = "true" ]; then pip install --no-cache-dir -r requirements-ai.txt; fi \
     && mkdir -p /data \
     && chown 10001:10001 /data
 
 COPY main.py ./main.py
+COPY detectors.py providers.py ./
 COPY static ./static
 
 USER 10001:10001
