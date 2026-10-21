@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+tests
+.env
+.env.*
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.py[cod]
+python-installer.exe

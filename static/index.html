@@ -12,11 +12,15 @@
       <p class="eyebrow">LOCAL SECURITY TOOL</p>
       <h1>Prompt Security Gateway</h1>
       <p class="intro">Check text for common prompt injection patterns before passing it to an AI model.</p>
+      <p id="access-help" class="privacy-note">The public demo is enabled. Application integrations can authenticate with an API key.</p>
     </header>
 
     <section class="card" aria-labelledby="analyzer-title">
       <h2 id="analyzer-title">Analyze a prompt</h2>
       <form id="analyze-form">
+        <label for="api-key">Application API key (optional for the public demo)</label>
+        <input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="API key supplied by the gateway operator">
+        <p class="privacy-note">The key is sent in the Authorization header and is not saved by this page.</p>
         <label for="prompt">Prompt text</label>
         <textarea id="prompt" name="prompt" rows="7" maxlength="50000" required placeholder="Paste or type text to analyze..."></textarea>
         <div class="fields">
@@ -53,7 +57,9 @@
 
     <section class="card audit-card">
       <div class="result-heading"><h2>Recent audit decisions</h2><button id="refresh-audit" class="secondary" type="button">Refresh</button></div>
-      <p class="privacy-note">Audit records store a prompt hash and decision metadata, not the prompt text.</p>
+      <label for="admin-key">Admin key to view audit records</label>
+      <input id="admin-key" type="password" autocomplete="off" spellcheck="false" placeholder="Configured by the gateway operator">
+      <p id="audit-status" class="privacy-note">Audit records store a prompt hash and decision metadata, not the prompt text. An admin key is required to view them.</p>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Source</th><th>Score</th><th>Decision</th><th>Rules</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
     </section>
     <footer>Prototype detector: signals can be missed or incorrectly flagged. Review decisions before using this with real data.</footer>

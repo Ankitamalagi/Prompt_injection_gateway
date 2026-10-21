@@ -12,10 +12,13 @@ form.addEventListener("submit", async (event) => {
     prompt: document.querySelector("#prompt").value,
     source: document.querySelector("#source").value,
   };
+  const headers = { "Content-Type": "application/json" };
+  const apiKey = document.querySelector("#api-key").value.trim();
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {
     const response = await fetch("/api/analyze", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(data),
     });
     const body = await response.json();
@@ -42,7 +45,7 @@ form.addEventListener("submit", async (event) => {
     sanitizedWrap.hidden = !body.sanitized_prompt;
     if (body.sanitized_prompt) document.querySelector("#sanitized").textContent = body.sanitized_prompt;
     resultPanel.hidden = false;
-    await loadAudit();
+    if (document.querySelector("#admin-key").value) await loadAudit();
   } catch (error) {
     errorBox.textContent = error.message;
   } finally {
@@ -52,11 +55,23 @@ form.addEventListener("submit", async (event) => {
 });
 
 async function loadAudit() {
-  const response = await fetch("/api/audit?limit=20");
-  if (!response.ok) return;
-  const data = await response.json();
+  const adminKey = document.querySelector("#admin-key").value.trim();
+  const status = document.querySelector("#audit-status");
   const rows = document.querySelector("#audit-rows");
+  if (!adminKey) {
+    rows.replaceChildren();
+    status.textContent = "Enter the admin key configured by the gateway operator to view audit records.";
+    return;
+  }
+  const response = await fetch("/api/audit?limit=20", { headers: { "X-Admin-Key": adminKey } });
+  const data = await response.json();
+  if (!response.ok) {
+    rows.replaceChildren();
+    status.textContent = data.detail || "Could not load audit records.";
+    return;
+  }
   rows.replaceChildren();
+  status.textContent = "Audit records contain decision metadata and prompt hashes, not prompt text.";
   for (const entry of data.entries) {
     const row = document.createElement("tr");
     const values = [new Date(entry.timestamp).toLocaleString(), entry.source, entry.risk_score, entry.decision, entry.detected_rules.join(", ") || "—"];
@@ -83,6 +98,9 @@ async function loadConfig() {
     SANITIZE: "Server policy returns a copy with known suspicious spans removed.",
   };
   document.querySelector("#policy-help").textContent = descriptions[config.policy];
+  document.querySelector("#access-help").textContent = config.public_demo_enabled
+    ? "The public demo is enabled. Application integrations can authenticate with an API key."
+    : "The public demo is disabled. Enter an application API key to analyze prompts.";
 }
 
 loadAudit();

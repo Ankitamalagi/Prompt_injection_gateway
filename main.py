@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import sqlite3
+import threading
+import time
 import unicodedata
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import AsyncIterator, Iterator
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,13 +65,57 @@ def parse_policy_mode(value: str) -> PolicyMode:
 SERVER_POLICY = parse_policy_mode(os.getenv("GATEWAY_POLICY", "AUTO"))
 
 
+def parse_bool_setting(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be set to true or false")
+
+
+def parse_api_keys(raw: str) -> dict[str, str]:
+    """Return SHA-256 digests mapped to server-owned app IDs; never log raw keys."""
+    if not raw.strip():
+        return {}
+    try:
+        configured = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("GATEWAY_API_KEYS must be a JSON object") from exc
+    if not isinstance(configured, dict):
+        raise ValueError("GATEWAY_API_KEYS must be a JSON object")
+    digests: dict[str, str] = {}
+    for app_id, api_key in configured.items():
+        if not isinstance(app_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", app_id):
+            raise ValueError("GATEWAY_API_KEYS contains an invalid app ID")
+        if not isinstance(api_key, str) or len(api_key) < 32:
+            raise ValueError("Each API key must contain at least 32 characters")
+        digests[hashlib.sha256(api_key.encode("utf-8")).hexdigest()] = app_id
+    return digests
+
+
+PUBLIC_DEMO_ENABLED = parse_bool_setting("GATEWAY_PUBLIC_DEMO", True)
+API_KEY_DIGESTS = parse_api_keys(os.getenv("GATEWAY_API_KEYS", "{}"))
+_admin_key_value = os.getenv("GATEWAY_ADMIN_KEY", "")
+if _admin_key_value and len(_admin_key_value) < 32:
+    raise ValueError("GATEWAY_ADMIN_KEY must contain at least 32 characters")
+ADMIN_KEY_DIGEST = hashlib.sha256(_admin_key_value.encode("utf-8")).hexdigest() if _admin_key_value else ""
+del _admin_key_value
+DEMO_RATE_LIMIT = int(os.getenv("GATEWAY_DEMO_LIMIT_PER_MINUTE", "20"))
+APP_RATE_LIMIT = int(os.getenv("GATEWAY_APP_LIMIT_PER_MINUTE", "120"))
+if not 1 <= DEMO_RATE_LIMIT <= 10_000 or not 1 <= APP_RATE_LIMIT <= 100_000:
+    raise ValueError("Configured request limits are outside supported ranges")
+
+
 class AnalyzeRequest(BaseModel):
-    # Keep accepting older clients that still send `policy`, but ignore it.
+    # Keep accepting older clients that still send policy/app_id, but ignore them.
     model_config = ConfigDict(extra="ignore")
 
     prompt: str = Field(min_length=1, max_length=50_000)
     source: str = Field(default="user", max_length=50)
-    app_id: str = Field(default="local", max_length=80)
 
 
 class AnalyzeResponse(BaseModel):
@@ -89,6 +137,73 @@ RULES: list[tuple[str, re.Pattern[str], int]] = [
     ("secret_exfiltration", re.compile(r"\b(send|email|upload|forward|exfiltrate)\b.{0,60}\b(secret|credential|password|api key|private data)\b", re.I | re.S), 40),
 ]
 ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
+
+
+class LocalRateLimiter:
+    """Small single-process limiter; public deployments also need edge limits."""
+
+    def __init__(self, max_buckets: int = 10_000) -> None:
+        self._windows: dict[str, deque[float]] = {}
+        self._lock = threading.Lock()
+        self._max_buckets = max_buckets
+        self._calls = 0
+
+    def check(self, identity: str, limit: int) -> None:
+        now = time.monotonic()
+        cutoff = now - 60
+        with self._lock:
+            self._calls += 1
+            if self._calls % 128 == 0:
+                for bucket_id, window in list(self._windows.items()):
+                    while window and window[0] <= cutoff:
+                        window.popleft()
+                    if not window:
+                        self._windows.pop(bucket_id, None)
+            window = self._windows.get(identity)
+            if window is None:
+                if len(self._windows) >= self._max_buckets:
+                    raise HTTPException(status_code=429, detail="Rate limit capacity reached")
+                window = deque()
+                self._windows[identity] = window
+            while window and window[0] <= cutoff:
+                window.popleft()
+            if len(window) >= limit:
+                retry_after = max(1, int(60 - (now - window[0])))
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many analysis requests. Try again shortly.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            window.append(now)
+
+
+RATE_LIMITER = LocalRateLimiter()
+
+
+def resolve_app_id(authorization: str | None, client_host: str | None) -> tuple[str, bool]:
+    """Validate an API key and return (server-owned app ID, is_public_demo)."""
+    if authorization:
+        scheme, separator, token = authorization.partition(" ")
+        if scheme.casefold() != "bearer" or not separator or not token.strip():
+            raise HTTPException(status_code=401, detail="Invalid API credentials")
+        digest = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+        for known_digest, app_id in API_KEY_DIGESTS.items():
+            if hmac.compare_digest(digest, known_digest):
+                return app_id, False
+        raise HTTPException(status_code=401, detail="Invalid API credentials")
+    if PUBLIC_DEMO_ENABLED:
+        return "public-demo", True
+    raise HTTPException(status_code=401, detail="An API key is required")
+
+
+def require_admin_key(supplied_key: str | None) -> None:
+    if not ADMIN_KEY_DIGEST:
+        raise HTTPException(status_code=503, detail="Audit access is not configured")
+    if not supplied_key:
+        raise HTTPException(status_code=401, detail="Admin key is required")
+    supplied_digest = hashlib.sha256(supplied_key.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(supplied_digest, ADMIN_KEY_DIGEST):
+        raise HTTPException(status_code=401, detail="Invalid admin key")
 
 
 def preprocess(prompt: str) -> tuple[str, bool]:
@@ -186,6 +301,20 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path == "/":
+        response.headers["Content-Security-Policy"] = "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -203,11 +332,20 @@ def get_config() -> dict[str, object]:
         "policy": SERVER_POLICY.value,
         "flag_threshold": FLAG_THRESHOLD,
         "block_threshold": BLOCK_THRESHOLD,
+        "public_demo_enabled": PUBLIC_DEMO_ENABLED,
     }
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
-def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+def analyze(
+    request: AnalyzeRequest,
+    http_request: Request,
+    authorization: str | None = Header(default=None),
+) -> AnalyzeResponse:
+    client_host = http_request.client.host if http_request.client else "unknown"
+    app_id, is_public_demo = resolve_app_id(authorization, client_host)
+    rate_identity = f"demo:{client_host}" if is_public_demo else f"app:{app_id}"
+    RATE_LIMITER.check(rate_identity, DEMO_RATE_LIMIT if is_public_demo else APP_RATE_LIMIT)
     request_id = str(uuid.uuid4())
     score, rules, normalized = detect(request.prompt, request.source)
     decision = decide(score)
@@ -218,7 +356,7 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         with database() as connection:
             connection.execute(
                 "INSERT INTO audit_logs (request_id,timestamp,app_id,source,risk_score,decision,detected_rules,prompt_sha256) VALUES (?,?,?,?,?,?,?,?)",
-                (request_id, timestamp, request.app_id, request.source, score, decision.value, json.dumps(rules), prompt_hash),
+                (request_id, timestamp, app_id, request.source, score, decision.value, json.dumps(rules), prompt_hash),
             )
     except sqlite3.Error as exc:
         logger.exception("Could not write audit log")
@@ -242,7 +380,11 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
 
 @app.get("/api/audit")
-def get_audit(limit: int = Query(default=50, ge=1, le=500)) -> dict[str, object]:
+def get_audit(
+    limit: int = Query(default=50, ge=1, le=500),
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, object]:
+    require_admin_key(x_admin_key)
     try:
         with database() as connection:
             rows = connection.execute(
