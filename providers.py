@@ -52,6 +52,8 @@ class OpenAICompatibleProvider:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
             )
+            choices = result.choices
+            content = choices[0].message.content if choices else None
         except self._timeout_error as exc:
             raise ProviderTimeout from exc
         except self._connection_error as exc:
@@ -59,9 +61,8 @@ class OpenAICompatibleProvider:
         except Exception as exc:
             # Keep provider status/body/key details out of application responses and logs.
             raise ProviderError from exc
-        content = result.choices[0].message.content if result.choices else None
-        if not isinstance(content, str):
-            raise ProviderError("provider returned no text")
+        if not isinstance(content, str) or not content.strip():
+            raise ProviderError("provider returned an invalid response")
         return content
 
 

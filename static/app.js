@@ -3,6 +3,39 @@ const resultPanel = document.querySelector("#result");
 const submitButton = document.querySelector("#submit-button");
 const errorBox = document.querySelector("#error");
 
+function showSecurityAnalysis(body) {
+  document.querySelector("#decision").textContent = body.decision;
+  document.querySelector("#decision").className = `badge ${body.decision.toLowerCase()}`;
+  document.querySelector("#score").textContent = body.risk_score;
+  document.querySelector("#message").textContent = body.message;
+  document.querySelector("#request-id").textContent = body.request_id;
+  const list = document.querySelector("#rules");
+  list.replaceChildren();
+  if (body.detected_rules.length) {
+    for (const rule of body.detected_rules) {
+      const item = document.createElement("li");
+      item.textContent = rule;
+      list.append(item);
+    }
+  } else {
+    const item = document.createElement("li");
+    item.textContent = "No rules matched.";
+    list.append(item);
+  }
+  const detectorList = document.querySelector("#detector-results");
+  detectorList.replaceChildren();
+  for (const detector of body.detector_results || []) {
+    const item = document.createElement("li");
+    const explanations = detector.signals.map((signal) => `${signal.name} (+${signal.score}): ${signal.explanation}`);
+    item.textContent = `${detector.detector}: +${detector.score}${explanations.length ? ` — ${explanations.join("; ")}` : " (no signal)"}`;
+    detectorList.append(item);
+  }
+  const sanitizedWrap = document.querySelector("#sanitized-wrap");
+  sanitizedWrap.hidden = !body.sanitized_prompt;
+  if (body.sanitized_prompt) document.querySelector("#sanitized").textContent = body.sanitized_prompt;
+  resultPanel.hidden = false;
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   errorBox.textContent = "";
@@ -23,36 +56,7 @@ form.addEventListener("submit", async (event) => {
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || "The request could not be analyzed.");
-    document.querySelector("#decision").textContent = body.decision;
-    document.querySelector("#decision").className = `badge ${body.decision.toLowerCase()}`;
-    document.querySelector("#score").textContent = body.risk_score;
-    document.querySelector("#message").textContent = body.message;
-    document.querySelector("#request-id").textContent = body.request_id;
-    const list = document.querySelector("#rules");
-    list.replaceChildren();
-    if (body.detected_rules.length) {
-      for (const rule of body.detected_rules) {
-        const item = document.createElement("li");
-        item.textContent = rule;
-        list.append(item);
-      }
-    } else {
-      const item = document.createElement("li");
-      item.textContent = "No rules matched.";
-      list.append(item);
-    }
-    const detectorList = document.querySelector("#detector-results");
-    detectorList.replaceChildren();
-    for (const detector of body.detector_results || []) {
-      const item = document.createElement("li");
-      const explanations = detector.signals.map((signal) => `${signal.name} (+${signal.score}): ${signal.explanation}`);
-      item.textContent = `${detector.detector}: +${detector.score}${explanations.length ? ` — ${explanations.join("; ")}` : " (no signal)"}`;
-      detectorList.append(item);
-    }
-    const sanitizedWrap = document.querySelector("#sanitized-wrap");
-    sanitizedWrap.hidden = !body.sanitized_prompt;
-    if (body.sanitized_prompt) document.querySelector("#sanitized").textContent = body.sanitized_prompt;
-    resultPanel.hidden = false;
+    showSecurityAnalysis(body);
     if (document.querySelector("#admin-key").value) await loadAudit();
   } catch (error) {
     errorBox.textContent = error.message;
@@ -115,10 +119,15 @@ document.querySelector("#ask-provider-button").addEventListener("click", async (
       }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "The provider request failed.");
+    if (!data.decision) throw new Error(data.detail || "The provider request failed.");
+    showSecurityAnalysis(data);
+    document.querySelector("#provider-status").textContent = data.provider_called
+      ? "The provider was called with text permitted by the server policy."
+      : "The provider was not called.";
     document.querySelector("#provider-message").textContent = data.message;
-    document.querySelector("#provider-answer").textContent = data.provider_response || "No provider response: gateway policy held this prompt.";
+    document.querySelector("#provider-answer").textContent = data.provider_response || "No AI response is available. See the security decision and message above.";
     document.querySelector("#provider-result").hidden = false;
+    if (document.querySelector("#admin-key").value) await loadAudit();
   } catch (error) {
     errorBox.textContent = error.message;
   } finally {

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import AsyncIterator, Iterator
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -146,7 +146,9 @@ class ChatResponse(BaseModel):
     detected_rules: list[str]
     active_detectors: list[str]
     detector_results: list[dict[str, object]]
+    provider_called: bool
     provider_sent: bool
+    provider_status: str
     provider_response: str | None = None
     message: str
 
@@ -420,23 +422,31 @@ def chat(
     if not authorization:
         raise HTTPException(status_code=401, detail="An application API key is required for provider access")
     analysis = analyze(request, http_request, authorization)
-    if PROVIDER_SETUP.provider is None:
-        raise HTTPException(status_code=503, detail="AI provider is not configured or available")
-
     if analysis.decision == Policy.block:
         return ChatResponse(
             request_id=analysis.request_id, risk_score=analysis.risk_score,
             decision=analysis.decision, detected_rules=analysis.detected_rules,
             active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
-            provider_sent=False, message="Gateway policy blocked this prompt; it was not sent to the provider.",
+            provider_called=False, provider_sent=False, provider_status="blocked",
+            message="Gateway policy BLOCKED this prompt. The provider was not called.",
         )
     if analysis.decision == Policy.flag and FLAG_PROVIDER_ACTION == "block":
         return ChatResponse(
             request_id=analysis.request_id, risk_score=analysis.risk_score,
             decision=analysis.decision, detected_rules=analysis.detected_rules,
             active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
-            provider_sent=False, message="The prompt was flagged and server policy is configured to hold flagged prompts.",
+            provider_called=False, provider_sent=False, provider_status="held",
+            message="Gateway policy FLAGGED this prompt and server settings hold flagged prompts. The provider was not called.",
         )
+    if PROVIDER_SETUP.provider is None:
+        unavailable = ChatResponse(
+            request_id=analysis.request_id, risk_score=analysis.risk_score,
+            decision=analysis.decision, detected_rules=analysis.detected_rules,
+            active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+            provider_called=False, provider_sent=False, provider_status="unavailable",
+            message=f"Gateway policy {analysis.decision.value} permits forwarding, but the AI provider is unavailable. No AI response is available.",
+        )
+        return JSONResponse(status_code=503, content=unavailable.model_dump(mode="json"))
     if analysis.decision == Policy.sanitize:
         provider_prompt = analysis.sanitized_prompt or ""
     else:
@@ -445,18 +455,39 @@ def chat(
         provider_response = PROVIDER_SETUP.provider.complete(provider_prompt)
     except ProviderTimeout as exc:
         logger.warning("provider timeout request_id=%s", analysis.request_id)
-        raise HTTPException(status_code=504, detail="AI provider timed out; no response was returned") from exc
+        failed = ChatResponse(
+            request_id=analysis.request_id, risk_score=analysis.risk_score,
+            decision=analysis.decision, detected_rules=analysis.detected_rules,
+            active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+            provider_called=True, provider_sent=False, provider_status="timeout",
+            message=f"Gateway policy {analysis.decision.value} permitted forwarding. The provider request timed out; no AI response is available.",
+        )
+        return JSONResponse(status_code=504, content=failed.model_dump(mode="json"))
     except ProviderError as exc:
         logger.warning("provider request failed request_id=%s", analysis.request_id)
-        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
+        failed = ChatResponse(
+            request_id=analysis.request_id, risk_score=analysis.risk_score,
+            decision=analysis.decision, detected_rules=analysis.detected_rules,
+            active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+            provider_called=True, provider_sent=False, provider_status="error",
+            message=f"Gateway policy {analysis.decision.value} permitted forwarding. The provider returned an error; no AI response is available.",
+        )
+        return JSONResponse(status_code=502, content=failed.model_dump(mode="json"))
     except Exception as exc:
         logger.warning("provider integration error request_id=%s", analysis.request_id)
-        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
+        failed = ChatResponse(
+            request_id=analysis.request_id, risk_score=analysis.risk_score,
+            decision=analysis.decision, detected_rules=analysis.detected_rules,
+            active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
+            provider_called=True, provider_sent=False, provider_status="error",
+            message=f"Gateway policy {analysis.decision.value} permitted forwarding. The provider returned an invalid response; no AI response is available.",
+        )
+        return JSONResponse(status_code=502, content=failed.model_dump(mode="json"))
     return ChatResponse(
         request_id=analysis.request_id, risk_score=analysis.risk_score,
         decision=analysis.decision, detected_rules=analysis.detected_rules,
         active_detectors=analysis.active_detectors, detector_results=analysis.detector_results,
-        provider_sent=True, provider_response=provider_response,
+        provider_called=True, provider_sent=True, provider_status="success", provider_response=provider_response,
         message="Gateway analysis completed and the permitted text was sent to the configured provider.",
     )
 

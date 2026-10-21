@@ -110,6 +110,7 @@ The volume preserves audit records across container restarts. For an internet-fa
 - `requirements.txt`: Python packages needed to run the service.
 - `requirements-dev.txt`: runtime requirements plus pytest and its HTTP test client.
 - `requirements-ai.txt`: optional official OpenAI Python SDK for provider-enabled deployments.
+- `.env.example`: safe placeholders showing optional provider settings (the app reads process variables, not `.env` files directly).
 - `detectors.py` and `providers.py`: modular detection and provider interfaces.
 - `Dockerfile` and `.dockerignore`: container build and safe build context.
 - `.gitignore`: excludes local environments, secret/config files, databases, and generated files from Git.
@@ -118,13 +119,33 @@ The volume preserves audit records across container restarts. For an internet-fa
 
 ## Optional AI provider integration
 
-The local dashboard and `POST /api/analyze` continue to work without provider credentials or the AI SDK. To enable provider forwarding, install `requirements-ai.txt` and configure these values only in the server's environment or secret manager:
+The local dashboard and `POST /api/analyze` continue to work without provider credentials or the AI SDK. To enable provider forwarding, install the optional SDK and set the environment variables before starting Uvicorn:
+
+```powershell
+python -m pip install -r requirements-ai.txt
+$env:AI_PROVIDER = "openai"
+$env:OPENAI_BASE_URL = "https://api.openai.com/v1"
+$env:OPENAI_MODEL = "your-model-name"
+$providerSecret = Read-Host "Provider API key" -AsSecureString
+$env:OPENAI_API_KEY = [System.Net.NetworkCredential]::new("", $providerSecret).Password
+Remove-Variable providerSecret
+$gatewayKey = python -c "import secrets; print(secrets.token_urlsafe(32))"
+Set-Clipboard $gatewayKey
+$env:GATEWAY_API_KEYS = ConvertTo-Json -Compress @{ "local-app" = $gatewayKey }
+python -m uvicorn main:app --reload
+```
+
+Replace the model name with one supported by your provider. `OPENAI_BASE_URL` can point to another OpenAI-compatible service. `.env.example` lists the variable names and safe placeholders; this application does not automatically read `.env` files. The generated gateway key is copied to the clipboard so you can paste it into the dashboard's application-key field. Keep real credentials in process environment variables or a deployment secret manager. Never put real values in `.env.example` or commit a `.env` file.
+
+The provider key and model are read only by the server:
 
 - `AI_PROVIDER=openai` enables the OpenAI-compatible provider. The default `none` keeps provider access off.
 - `OPENAI_API_KEY` is read only by the server and is never returned, logged, or sent to browser code.
 - `OPENAI_MODEL` selects the model. `OPENAI_BASE_URL` is optional for an operator-managed OpenAI-compatible endpoint.
 - `AI_PROVIDER_TIMEOUT_SECONDS` sets the request timeout (1–120 seconds; default 20).
 - `GATEWAY_FLAG_PROVIDER_ACTION` is `block` by default. Set it to `allow` only if the server operator explicitly wants FLAGged prompts sent.
+
+The dashboard's **Analyze, then ask AI provider** button requires the registered gateway key in its application-key field. That key is different from the provider key; the provider key is never entered into the dashboard.
 
 Provider calls use `POST /api/chat` with the same prompt/source JSON as `/api/analyze`, and require a registered application Bearer key even if the anonymous public demo is enabled. The route runs preprocessing, detection, policy enforcement, and audit logging first:
 
@@ -133,7 +154,7 @@ Provider calls use `POST /api/chat` with the same prompt/source JSON as `/api/an
 - `SANITIZE`: sends only the normalized copy after the current matching rule spans are replaced by `[removed suspicious instruction]`. This simple regex replacement can remove useful text and is not a proof of safety.
 - `ALLOW`: sends the normalized prompt.
 
-Provider errors return generic gateway messages (502 for provider failures, 504 for timeout, 503 when provider setup is unavailable). The SDK is configured without automatic retries to avoid repeating paid requests. The provider response is returned to the authenticated caller and is not written to SQLite. Enabling this option sends permitted prompt content to the configured external provider; review its privacy and retention terms before use. For an AI-enabled Docker image, build with `docker build --build-arg INSTALL_AI=true -t prompt-injection-gateway .` and pass provider settings at container runtime.
+Provider errors return generic gateway messages (502 for provider failures or invalid responses, 504 for timeout, 503 when provider setup is unavailable), together with the security decision and score. A blocked or held request returns its security result and says the provider was not called. The SDK is configured without automatic retries to avoid repeating paid requests. The provider response is returned to the authenticated caller and is not written to SQLite. Enabling this option sends permitted prompt content to the configured external provider; review its privacy and retention terms before use. For an AI-enabled Docker image, build with `docker build --build-arg INSTALL_AI=true -t prompt-injection-gateway .` and pass provider settings at container runtime.
 
 ## Detection pipeline
 
@@ -147,6 +168,8 @@ New detectors can implement `inspect(normalized_prompt)` and register their clas
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+The tests use a mocked provider and make no paid API calls. You do not need `requirements-ai.txt` or a real provider key to run them.
 
 ## Limitations
 

@@ -47,20 +47,21 @@
       </form>
     </section>
 
-    <section id="provider-result" class="card result" hidden aria-live="polite">
-      <h2>AI provider response</h2>
-      <p id="provider-message"></p>
-      <pre id="provider-answer"></pre>
-    </section>
-
     <section id="result" class="card result" hidden aria-live="polite">
-      <div class="result-heading"><h2>Analysis result</h2><span id="decision" class="badge"></span></div>
+      <div class="result-heading"><h2>Security decision</h2><span id="decision" class="badge"></span></div>
       <p class="score-line">Risk score: <strong id="score"></strong><span> / 100</span></p>
       <p id="message"></p>
       <h3>Detected rules</h3><ul id="rules"></ul>
       <h3>Detector contributions</h3><ul id="detector-results"></ul>
       <div id="sanitized-wrap" hidden><h3>Sanitized copy</h3><pre id="sanitized"></pre></div>
       <p class="request-id">Request ID: <code id="request-id"></code></p>
+    </section>
+
+    <section id="provider-result" class="card result" hidden aria-live="polite">
+      <h2>AI provider response</h2>
+      <p id="provider-status"></p>
+      <p id="provider-message"></p>
+      <pre id="provider-answer"></pre>
     </section>
 
     <section class="card audit-card">
