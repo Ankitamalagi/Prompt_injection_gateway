@@ -23,6 +23,7 @@ from typing import AsyncIterator, Iterator
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
 from detectors import load_detector_plugins, parse_detector_names, run_pipeline
@@ -30,6 +31,9 @@ from providers import ProviderError, ProviderTimeout, configure_provider
 
 
 BASE_DIR = Path(__file__).resolve().parent
+# Load this project's local settings before reading any server configuration.
+# Existing shell/deployment variables take precedence over values in .env.
+load_dotenv(BASE_DIR / ".env", override=False)
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = Path(os.getenv("GATEWAY_DB_PATH", str(BASE_DIR / "gateway_logs.sqlite3")))
 FLAG_THRESHOLD = int(os.getenv("FLAG_THRESHOLD", "31"))

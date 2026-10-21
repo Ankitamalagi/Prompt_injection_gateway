@@ -34,6 +34,8 @@ python -m venv .venv
 python -m pip install -r requirements-dev.txt
 ```
 
+For local OpenAI settings, copy `.env.example` to `.env` in the project root and fill in `OPENAI_API_KEY` there. The server loads that local file at startup; environment variables already set in the shell take priority. The real `.env` file is ignored by Git.
+
 If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that terminal, then activate again. You can also install without activation with `.venv\Scripts\python -m pip install -r requirements-dev.txt`.
 
 Start the app:
@@ -110,7 +112,7 @@ The volume preserves audit records across container restarts. For an internet-fa
 - `requirements.txt`: Python packages needed to run the service.
 - `requirements-dev.txt`: runtime requirements plus pytest and its HTTP test client.
 - `requirements-ai.txt`: optional official OpenAI Python SDK for provider-enabled deployments.
-- `.env.example`: safe placeholders showing optional provider settings (the app reads process variables, not `.env` files directly).
+- `.env.example`: safe settings template; copy it to the ignored local `.env` file and enter secrets there.
 - `detectors.py` and `providers.py`: modular detection and provider interfaces.
 - `Dockerfile` and `.dockerignore`: container build and safe build context.
 - `.gitignore`: excludes local environments, secret/config files, databases, and generated files from Git.
@@ -119,23 +121,15 @@ The volume preserves audit records across container restarts. For an internet-fa
 
 ## Optional AI provider integration
 
-The local dashboard and `POST /api/analyze` continue to work without provider credentials or the AI SDK. To enable provider forwarding, install the optional SDK and set the environment variables before starting Uvicorn:
+The local dashboard and `POST /api/analyze` continue to work without provider credentials or the AI SDK. To enable provider forwarding, install the optional SDK, copy `.env.example` to `.env`, and configure the values there:
 
 ```powershell
 python -m pip install -r requirements-ai.txt
-$env:AI_PROVIDER = "openai"
-$env:OPENAI_BASE_URL = "https://api.openai.com/v1"
-$env:OPENAI_MODEL = "your-model-name"
-$providerSecret = Read-Host "Provider API key" -AsSecureString
-$env:OPENAI_API_KEY = [System.Net.NetworkCredential]::new("", $providerSecret).Password
-Remove-Variable providerSecret
-$gatewayKey = python -c "import secrets; print(secrets.token_urlsafe(32))"
-Set-Clipboard $gatewayKey
-$env:GATEWAY_API_KEYS = ConvertTo-Json -Compress @{ "local-app" = $gatewayKey }
-python -m uvicorn main:app --reload
+Copy-Item .env.example .env
+code .env
 ```
 
-Replace the model name with one supported by your provider. `OPENAI_BASE_URL` can point to another OpenAI-compatible service. `.env.example` lists the variable names and safe placeholders; this application does not automatically read `.env` files. The generated gateway key is copied to the clipboard so you can paste it into the dashboard's application-key field. Keep real credentials in process environment variables or a deployment secret manager. Never put real values in `.env.example` or commit a `.env` file.
+In the `.env` file, keep `AI_PROVIDER=openai`, keep `OPENAI_BASE_URL=https://api.openai.com/v1`, use a model available to your account (the example uses `gpt-4o-mini`), and paste your newly created OpenAI API key on the right side of `OPENAI_API_KEY=`. **Do not paste the provider key into chat, browser fields, source code, or `.env.example`.** To use `/api/chat`, also configure `GATEWAY_API_KEYS` as a JSON object mapping an app name to a separate random key of at least 32 characters; enter that gateway key in the dashboard's application-key field. The gateway key and provider key are different. Keep real credentials only in your ignored `.env` file or a deployment secret manager.
 
 The provider key and model are read only by the server:
 
