@@ -1,0 +1,41 @@
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+.dist/
+
+# Local environment settings and secrets
+.env
+.env.*
+!.env.example
+secrets.*
+*.pem
+*.key
+
+# Local databases and logs
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Temporary and operating-system files
+*.tmp
+*.temp
+*.bak
+*.swp
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+python-installer.exe

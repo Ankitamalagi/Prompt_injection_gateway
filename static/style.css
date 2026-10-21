@@ -1,0 +1,34 @@
+:root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: #182333; background: #f2f5f9; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.page { width: min(900px, calc(100% - 32px)); margin: 48px auto; }
+header { margin-bottom: 26px; }
+.eyebrow { color: #375fd1; font-size: .76rem; font-weight: 750; letter-spacing: .12em; }
+h1 { margin: 8px 0; font-size: clamp(2rem, 6vw, 3rem); }
+.intro { max-width: 660px; color: #526175; line-height: 1.55; }
+.card { background: #fff; border: 1px solid #e1e7ef; border-radius: 14px; padding: 24px; margin: 18px 0; box-shadow: 0 8px 24px #22304a0a; }
+h2 { margin: 0 0 18px; font-size: 1.25rem; }
+h3 { margin: 18px 0 8px; font-size: 1rem; }
+label { display: block; margin: 14px 0 7px; font-size: .92rem; font-weight: 650; }
+textarea, select { width: 100%; padding: 11px 12px; border: 1px solid #cbd5e2; border-radius: 8px; color: inherit; background: white; font: inherit; }
+textarea { resize: vertical; line-height: 1.5; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+button { margin-top: 18px; padding: 11px 17px; border: 0; border-radius: 8px; background: #315bd4; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+button:disabled { opacity: .65; cursor: wait; }
+button.secondary { margin: 0; padding: 8px 12px; color: #315bd4; background: #eef2ff; }
+.error { color: #b42318; }
+.result-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.result-heading h2 { margin-bottom: 0; }
+.badge { display: inline-block; border-radius: 100px; padding: 6px 11px; font-size: .8rem; font-weight: 800; background: #e8f7ee; color: #17633a; }
+.badge.flag, .badge.sanitize { background: #fff3d6; color: #815400; }
+.badge.block { background: #fee9e7; color: #a52b20; }
+.score-line { font-size: 1.12rem; }
+.score-line strong { font-size: 1.55rem; }
+li { margin: 6px 0; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7fb; padding: 12px; border-radius: 8px; }
+.request-id, .privacy-note, footer { color: #68778b; font-size: .84rem; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+th, td { text-align: left; border-bottom: 1px solid #e8edf3; padding: 10px 8px; vertical-align: top; }
+footer { padding: 12px 2px 30px; line-height: 1.5; }
+@media (max-width: 600px) { .page { margin: 24px auto; } .card { padding: 18px; } .fields { grid-template-columns: 1fr; gap: 0; } }

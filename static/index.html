@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prompt Security Gateway</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="page">
+    <header>
+      <p class="eyebrow">LOCAL SECURITY TOOL</p>
+      <h1>Prompt Security Gateway</h1>
+      <p class="intro">Check text for common prompt injection patterns before passing it to an AI model.</p>
+    </header>
+
+    <section class="card" aria-labelledby="analyzer-title">
+      <h2 id="analyzer-title">Analyze a prompt</h2>
+      <form id="analyze-form">
+        <label for="prompt">Prompt text</label>
+        <textarea id="prompt" name="prompt" rows="7" maxlength="50000" required placeholder="Paste or type text to analyze..."></textarea>
+        <div class="fields">
+          <div>
+            <label for="source">Where did this text come from?</label>
+            <select id="source" name="source">
+              <option value="user">User</option><option value="document">Document</option>
+              <option value="web">Web page</option><option value="tool">Tool output</option>
+            </select>
+          </div>
+          <div>
+            <label for="policy">Server policy</label>
+            <select id="policy" name="policy" disabled>
+              <option value="AUTO">Automatic (use score thresholds)</option>
+              <option value="ALLOW">Allow</option><option value="FLAG">Flag</option>
+              <option value="BLOCK">Block</option><option value="SANITIZE">Sanitize</option>
+            </select>
+            <p id="policy-help" class="privacy-note">Policy is controlled by the server.</p>
+          </div>
+        </div>
+        <button id="submit-button" type="submit">Analyze prompt</button>
+        <p id="error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="result" class="card result" hidden aria-live="polite">
+      <div class="result-heading"><h2>Analysis result</h2><span id="decision" class="badge"></span></div>
+      <p class="score-line">Risk score: <strong id="score"></strong><span> / 100</span></p>
+      <p id="message"></p>
+      <h3>Detected rules</h3><ul id="rules"></ul>
+      <div id="sanitized-wrap" hidden><h3>Sanitized copy</h3><pre id="sanitized"></pre></div>
+      <p class="request-id">Request ID: <code id="request-id"></code></p>
+    </section>
+
+    <section class="card audit-card">
+      <div class="result-heading"><h2>Recent audit decisions</h2><button id="refresh-audit" class="secondary" type="button">Refresh</button></div>
+      <p class="privacy-note">Audit records store a prompt hash and decision metadata, not the prompt text.</p>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Source</th><th>Score</th><th>Decision</th><th>Rules</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
+    </section>
+    <footer>Prototype detector: signals can be missed or incorrectly flagged. Review decisions before using this with real data.</footer>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
